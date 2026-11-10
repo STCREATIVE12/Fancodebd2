@@ -2,12 +2,15 @@ name: Scrape Upcoming Events
 
 on:
   schedule:
+    # Har 6 ghante baad auto-run hoga (UTC)
     - cron: '0 */6 * * *'
+  # GitHub Actions tab se manually run karne ke liye
   workflow_dispatch:
 
 jobs:
   scrape-and-update:
     runs-on: ubuntu-latest
+
     permissions:
       contents: write
 
@@ -19,10 +22,16 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
 
-      - name: Install Dependencies
+      - name: Install Python Dependencies
         run: |
-          pip install pytz
+          python -m pip install --upgrade pip
+          pip install playwright
+
+      - name: Install Playwright Browsers & OS Dependencies
+        run: |
+          playwright install chromium --with-deps
 
       - name: Run Scraper Script
         run: |
@@ -35,10 +44,11 @@ jobs:
           
           git add fancode_matches.json
           
+          # Sirf tab commit karega jab data mein koi changes honge
           if git diff --staged --quiet; then
-            echo "No changes detected. Skipping commit."
+            echo "No changes found. Skipping commit."
           else
-            git commit -m "chore: auto-update matches data [skip ci]"
+            git commit -m "chore: auto-update fancode matches [skip ci]"
             git push
           fi
           
