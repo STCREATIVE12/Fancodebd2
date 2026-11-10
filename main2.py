@@ -4,7 +4,7 @@ import re
 from datetime import datetime, timezone, timedelta
 from playwright.async_api import async_playwright
 
-async def scrape_all_fancode_schedules():
+async def scrape_upcoming_from_tour_listing():
     output_json_file = "fancode_matches.json"
 
     # IST Time format (UTC + 5:30)
@@ -17,18 +17,6 @@ async def scrape_all_fancode_schedules():
         "last update time": now_ist,
         "matches": []
     }
-
-    # Aapke screenshot mein dikh rahi saari specific categories
-    sports_categories = [
-        {"name": "Cricket", "path": "/cricket/schedule"},
-        {"name": "Football", "path": "/football/schedule"},
-        {"name": "Tennis", "path": "/lawn-tennis/schedule"},
-        {"name": "Formula 1", "path": "/formula1/schedule"},
-        {"name": "MotoGP", "path": "/motogp/schedule"},
-        {"name": "Golf", "path": "/golf/schedule"},
-        {"name": "Motorsports", "path": "/racing/schedule"},
-        {"name": "Badminton", "path": "/badminton/schedule"}
-    ]
 
     user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
@@ -43,104 +31,151 @@ async def scrape_all_fancode_schedules():
         )
         page = await context.new_page()
 
-        # Images aur styles block karein taaki execution fast ho
+        # Unnecessary media files block taaki GitHub Actions par fast chale
         await page.route("**/*.{png,jpg,jpeg,svg,woff,woff2,css}", lambda route: route.abort())
+
+        target_url = "https://www.fancode.com/tour-listing/all"
+        print(f"🟢 Opening All Tours Page: {target_url}")
+
+        tours_list = []
+        try:
+            await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(4)
+
+            # Scroll karke saare Upcoming Tours load karwana
+            for _ in range(4):
+                await page.evaluate("window.scrollBy(0, 800);")
+                await asyncio.sleep(1)
+
+            # Step 1: Saare Tour Listing Links nikalna
+            tours_list = await page.evaluate("""() => {
+                let items = [];
+                let links = document.querySelectorAll('a[href*="/tour/"]');
+                links.forEach(a => {
+                    let href = a.href;
+                    let text = a.innerText.replace(/\\n/g, ' ').trim();
+                    if (href && !items.some(i => i.href === href)) {
+                        items.push({ href: href, title: text });
+                    }
+                });
+                return items;
+            }""")
+        except Exception as e:
+            print(f"🔴 Error loading tour listing: {str(e)}")
+
+        print(f"🟢 Total Tours Found: {len(tours_list)}")
 
         seen_match_ids = set()
 
-        for sport in sports_categories:
-            sport_name = sport["name"]
-            url = f"https://www.fancode.com{sport['path']}"
-            print(f"🟢 Processing {sport_name}: {url}")
+        # Step 2: Har Tour Page ke andar jakar "Upcoming" match cards parse karna
+        for tour in tours_list[:12]:
+            tour_url = tour["href"]
+            print(f"👉 Visiting Tour: {tour_url}")
 
             try:
-                await page.goto(url, wait_until="domcontentloaded", timeout=25000)
+                await page.goto(tour_url, wait_until="domcontentloaded", timeout=20000)
                 await asyncio.sleep(3)
 
-                # Niche Tomorrow/Upcoming matches load karne ke liye 2-3 scroll
-                for _ in range(3):
-                    await page.evaluate("window.scrollBy(0, 1000);")
-                    await asyncio.sleep(1)
-
-                # Page ke saare cards aur links extract karna
-                items = await page.evaluate("""() => {
+                # Page ke embedded data aur HTML se Upcoming fixtures nikalna
+                matches_data = await page.evaluate("""() => {
                     let results = [];
-                    // Match detail page links
-                    let anchors = document.querySelectorAll('a[href*="/matches/"]');
-
-                    anchors.forEach(a => {
-                        let href = a.href;
-                        let text = a.innerText.replace(/\\n/g, ' - ').trim();
-                        let cleanText = text.replace(/\\s+/g, ' ').trim();
+                    
+                    // DOM parsing: Upcoming containers
+                    let upcomingCards = document.querySelectorAll('a[href*="/matches/"], div[class*="matchCard"], div[role="article"]');
+                    upcomingCards.forEach(card => {
+                        let text = card.innerText ? card.innerText.replace(/\\n/g, ' | ') : '';
+                        let linkEl = card.tagName === 'A' ? card : card.querySelector('a');
+                        let href = linkEl ? linkEl.href : '';
                         
-                        let img = a.querySelector('img');
+                        let img = card.querySelector('img');
                         let src = img ? (img.src || img.getAttribute('data-src') || '') : '';
 
-                        if (href && cleanText.length > 3) {
+                        if (text.length > 5 && (text.includes('Upcoming') || text.includes('vs') || text.includes('VS') || text.includes('Nov') || text.includes('Dec'))) {
                             results.push({
+                                raw_text: text,
                                 href: href,
-                                text: cleanText,
                                 src: src
                             });
                         }
                     });
+
+                    // Agar card na mile toh Next data scan
+                    if (results.length === 0 && window.__NEXT_DATA__) {
+                        try {
+                            let scanObj = (o) => {
+                                if (!o) return;
+                                if (typeof o === 'object') {
+                                    if (o.status === 'UPCOMING' || (o.matchId && o.startTime)) {
+                                        results.push({
+                                            raw_text: (o.name || o.title || '') + ' | ' + (o.startTime || ''),
+                                            href: '/matches/' + (o.matchId || o.id),
+                                            src: o.src || ''
+                                        });
+                                    }
+                                    for (let k in o) scanObj(o[k]);
+                                }
+                            };
+                            scanObj(window.__NEXT_DATA__);
+                        } catch(err) {}
+                    }
+
                     return results;
                 }""")
 
-                print(f"👉 Found {len(items)} items in {sport_name}")
+                # Sport Name detect karna
+                sport_name = "Cricket"
+                if "/football/" in tour_url:
+                    sport_name = "Football"
+                elif "/formula1/" in tour_url:
+                    sport_name = "Formula 1"
+                elif "/lawn-tennis/" in tour_url:
+                    sport_name = "Tennis"
+                elif "/motogp/" in tour_url:
+                    sport_name = "MotoGP"
 
-                for itm in items:
-                    href = itm["href"]
-                    raw_text = itm["text"]
-                    
-                    # Match ID extract karna href se (jaise ...-4250404/...)
+                for m in matches_data:
+                    raw_text = m.get("raw_text", "")
+                    href = m.get("href", "")
+
+                    # Match ID extract
                     id_match = re.search(r'[-/](\d{6,8})(?:/|$)', href)
-                    mid = id_match.group(1) if id_match else href.split("/")[-1]
+                    mid = id_match.group(1) if id_match else re.sub(r'[^0-9]', '', href)
+                    if not mid:
+                        mid = str(abs(hash(raw_text)))[:7]
 
                     if mid in seen_match_ids:
                         continue
                     seen_match_ids.add(mid)
 
-                    # Status detect (LIVE vs UPCOMING)
-                    is_live = "LIVE" in raw_text.upper() or "WATCH LIVE" in raw_text.upper()
-                    status = "LIVE" if is_live else "UPCOMING"
+                    # Text clean
+                    clean_str = re.sub(r'(Upcoming|Completed|Highlights|Watch Live)', '', raw_text, flags=re.I)
+                    clean_str = re.sub(r'[-–—|]', ' ', clean_str)
+                    clean_str = re.sub(r'\s+', ' ', clean_str).strip()
 
-                    # Title Clean up
-                    clean_title = re.sub(r'(LIVE|WATCH LIVE|COMPLETED|HIGHLIGHTS)', '', raw_text, flags=re.I)
-                    clean_title = re.sub(r'[-–—]', ' ', clean_title)
-                    clean_title = re.sub(r'\s+', ' ', clean_title).strip()
-
-                    # Teams split
-                    teams = re.split(r'\s+vs\s+|\s+-\s+', clean_title, flags=re.I)
-                    t1 = teams[0].strip() if len(teams) > 0 else clean_title
+                    # Teams detect
+                    teams = re.split(r'\s+vs\s+|\s+VS\s+', clean_str, flags=re.I)
+                    t1 = teams[0].strip() if len(teams) > 0 else clean_str
                     t2 = teams[1].strip() if len(teams) > 1 else ""
 
-                    match_name = f"{t1} vs {t2}" if t2 else clean_title
+                    match_title = f"{t1} vs {t2}" if t2 else t1
 
-                    match_entry = {
+                    entry = {
                         "event_category": sport_name,
                         "match_id": int(mid) if str(mid).isdigit() else mid,
-                        "title": clean_title,
-                        "match_name": match_name,
-                        "event_name": f"{sport_name} Championship",
-                        "src": itm["src"],
+                        "title": match_title,
+                        "match_name": match_title,
+                        "event_name": tour.get("title") or f"{sport_name} Championship",
+                        "src": m.get("src", ""),
                         "team_1": t1,
                         "team_2": t2,
-                        "status": status,
+                        "status": "UPCOMING",
                         "startTime": now_ist
                     }
 
-                    if status == "LIVE":
-                        match_entry["user-agent"] = user_agent
-                        match_entry["dai_url"] = None
-                        match_entry["adfree_url"] = None
-                        match_entry["google_m3u8_hex"] = None
-                        match_entry["akamai_m3u8_hex"] = None
+                    final_payload["matches"].append(entry)
 
-                    final_payload["matches"].append(match_entry)
-
-            except Exception as e:
-                print(f"🟡 Warning for {sport_name}: {str(e)}")
+            except Exception as tour_err:
+                print(f"⚠️ Error on tour {tour_url}: {str(tour_err)}")
                 continue
 
         await browser.close()
@@ -148,8 +183,8 @@ async def scrape_all_fancode_schedules():
         with open(output_json_file, "w", encoding="utf-8") as f:
             json.dump(final_payload, f, indent=4, ensure_ascii=False)
 
-        print(f"🟢 Successfully extracted and saved {len(final_payload['matches'])} matches in {output_json_file}")
+        print(f"🟢 Successfully extracted {len(final_payload['matches'])} Upcoming matches in {output_json_file}")
 
 if __name__ == "__main__":
-    asyncio.run(scrape_all_fancode_schedules())
+    asyncio.run(scrape_upcoming_from_tour_listing())
     
