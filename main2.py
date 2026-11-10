@@ -4,7 +4,7 @@ import re
 from datetime import datetime, timezone, timedelta
 from playwright.async_api import async_playwright
 
-async def scrape_all_tour_fixtures():
+async def scrape_complete_fancode_data():
     output_json_file = "fancode_matches.json"
 
     # IST Time format (UTC + 5:30)
@@ -18,7 +18,7 @@ async def scrape_all_tour_fixtures():
         "matches": []
     }
 
-    user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    user_agent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(
@@ -27,33 +27,50 @@ async def scrape_all_tour_fixtures():
         )
         context = await browser.new_context(
             user_agent=user_agent,
-            viewport={"width": 1280, "height": 900}
+            viewport={"width": 1440, "height": 900}
         )
         page = await context.new_page()
 
-        # Images, CSS, fonts block karein taaki GitHub Actions 1-2 second mein page load kare
+        # Network interceptor: FanCode backend API se aane wale pure JSON responses pakadna
+        captured_api_matches = []
+
+        async def intercept_response(response):
+            try:
+                url = response.url
+                # FanCode matches / tour / schedule GraphQL aur REST calls
+                if any(x in url for x in ["graphql", "api.fancode.com", "/matches", "/schedule"]):
+                    content_type = response.headers.get("content-type", "")
+                    if "application/json" in content_type:
+                        res_json = await response.json()
+                        captured_api_matches.append(res_json)
+            except Exception:
+                pass
+
+        page.on("response", intercept_response)
+
+        # Images/fonts block karo taaki har tour page 1 second mein open ho
         await page.route("**/*.{png,jpg,jpeg,svg,woff,woff2,css}", lambda route: route.abort())
 
         target_url = "https://www.fancode.com/tour-listing/all"
-        print(f"🟢 Opening All Tours Page: {target_url}")
+        print(f"🟢 Fetching All Tours from: {target_url}")
 
         tours_list = []
         try:
             await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
             await asyncio.sleep(3)
 
-            # Scroll karke saare active tours load karna
+            # Scroll karke saare active / upcoming tours load karna
             for _ in range(5):
                 await page.evaluate("window.scrollBy(0, 1000);")
                 await asyncio.sleep(0.8)
 
-            # Tours URLs aur Tour Names extract karna
+            # Step 1: Saare Tour Links aur Names nikalna
             tours_list = await page.evaluate("""() => {
                 let items = [];
-                let links = document.querySelectorAll('a[href*="/tour/"]');
-                links.forEach(a => {
+                let anchors = document.querySelectorAll('a[href*="/tour/"]');
+                anchors.forEach(a => {
                     let href = a.href;
-                    let text = a.innerText.replace(/\\n/g, ' ').trim();
+                    let text = a.innerText.replace(/\\n/g, ' - ').trim();
                     if (href && !items.some(i => i.href === href)) {
                         items.push({ href: href, title: text });
                     }
@@ -61,145 +78,163 @@ async def scrape_all_tour_fixtures():
                 return items;
             }""")
         except Exception as e:
-            print(f"🔴 Error loading tour listing: {str(e)}")
+            print(f"🔴 Error loading tours list: {str(e)}")
 
         print(f"🟢 Total Tours Found: {len(tours_list)}")
 
         seen_match_ids = set()
 
-        # Ab saare active tours visit honge (top 35 active tours limit taaki GitHub job timeout na ho)
-        for index, tour in enumerate(tours_list[:35]):
+        # Step 2: Sabhi active tours ke andar jakar matches nikalna
+        for index, tour in enumerate(tours_list):
             tour_url = tour["href"]
-            # Ensure URL points to matches tab
             matches_url = tour_url if "/matches" in tour_url else f"{tour_url.rstrip('/')}/matches"
-            print(f"[{index + 1}/{min(len(tours_list), 35)}] ↳ Checking Fixtures: {matches_url}")
+            print(f"[{index + 1}/{len(tours_list)}] ↳ Scanning Matches: {matches_url}")
+
+            # Sport category detect karna
+            sport_name = "Cricket"
+            if "/football/" in tour_url:
+                sport_name = "Football"
+            elif "/tennis/" in tour_url or "/lawn-tennis/" in tour_url:
+                sport_name = "Tennis"
+            elif "/formula1/" in tour_url:
+                sport_name = "Formula 1"
+            elif "/motogp/" in tour_url:
+                sport_name = "MotoGP"
+            elif "/badminton/" in tour_url:
+                sport_name = "Badminton"
+            elif "/golf/" in tour_url:
+                sport_name = "Golf"
+            elif "/racing/" in tour_url:
+                sport_name = "Motorsports"
 
             try:
                 await page.goto(matches_url, wait_until="domcontentloaded", timeout=18000)
                 await asyncio.sleep(2)
-                # Tour page scroll karo taaki niche ke upcoming match cards load ho sakein
-                await page.evaluate("window.scrollBy(0, 800);")
+                await page.evaluate("window.scrollBy(0, 1000);")
                 await asyncio.sleep(1)
 
-                # Tour page ke andar ke saare individual match fixtures dhoondhna
-                fixtures = await page.evaluate("""() => {
-                    let list = [];
+                # Tour page ke state aur cards se pure upcoming & live matches parse karna
+                matches_in_tour = await page.evaluate("""() => {
+                    let extracted = [];
                     
-                    // Match container cards
-                    let matchElements = document.querySelectorAll('a[href*="/matches/"], div[class*="matchCard"], div[role="article"]');
-                    
-                    matchElements.forEach(el => {
-                        let text = el.innerText ? el.innerText.replace(/\\n/g, ' | ') : '';
-                        let link = el.tagName === 'A' ? el.href : (el.querySelector('a') ? el.querySelector('a').href : '');
-                        
-                        let img = el.querySelector('img');
+                    // Tarika A: Page ke DOM Cards
+                    let cards = document.querySelectorAll('a[href*="/matches/"]');
+                    cards.forEach(a => {
+                        let href = a.href;
+                        let text = a.innerText.replace(/\\n/g, ' | ').trim();
+                        let img = a.querySelector('img');
                         let src = img ? (img.src || img.getAttribute('data-src') || '') : '';
-
-                        // Upcoming check: Card text mein Upcoming/VS/date info ho
-                        let isCompleted = text.includes('Completed') || text.includes('Highlights');
                         
-                        if (text.length > 5 && !isCompleted) {
-                            list.push({
-                                raw_text: text,
-                                href: link,
+                        if (href && text.length > 3) {
+                            extracted.push({
+                                href: href,
+                                text: text,
                                 src: src
                             });
                         }
                     });
 
-                    // Next.js direct state scan (Deep Search)
-                    if (window.__NEXT_DATA__) {
-                        try {
-                            let scan = (node) => {
-                                if (!node) return;
-                                if (typeof node === 'object') {
-                                    if ((node.matchId || node.id) && (node.startTime || node.status === 'UPCOMING' || node.teams)) {
-                                        let tName = node.name || node.title || '';
-                                        list.push({
-                                            raw_text: tName + ' | ' + (node.startTime || ''),
-                                            href: '/matches/' + (node.matchId || node.id),
-                                            src: node.src || node.image || '',
-                                            obj: node
-                                        });
-                                    }
-                                    for (let k in node) scan(node[k]);
+                    // Tarika B: Next.js Dehydrated Query State (100% complete data)
+                    try {
+                        let scan = (node) => {
+                            if (!node) return;
+                            if (typeof node === 'object') {
+                                if ((node.matchId || node.id) && (node.startTime || node.teams || node.status)) {
+                                    extracted.push({
+                                        id: node.matchId || node.id,
+                                        name: node.name || node.title || '',
+                                        tourName: node.tourName || node.seriesName || '',
+                                        src: node.src || node.image || '',
+                                        status: node.status || 'UPCOMING',
+                                        startTime: node.startTime || '',
+                                        teams: node.teams || []
+                                    });
                                 }
-                            };
-                            scan(window.__NEXT_DATA__);
-                        } catch(e) {}
-                    }
+                                for (let k in node) scan(node[k]);
+                            }
+                        };
+                        if (window.__NEXT_DATA__) scan(window.__NEXT_DATA__);
+                    } catch(e) {}
 
-                    return list;
+                    return extracted;
                 }""")
 
-                # Sport Name detect
-                sport_name = "Cricket"
-                if "/football/" in tour_url:
-                    sport_name = "Football"
-                elif "/formula1/" in tour_url:
-                    sport_name = "Formula 1"
-                elif "/lawn-tennis/" in tour_url:
-                    sport_name = "Tennis"
-                elif "/motogp/" in tour_url:
-                    sport_name = "MotoGP"
-                elif "/badminton/" in tour_url:
-                    sport_name = "Badminton"
+                # Format karna exact JSON Schema mein
+                for item in matches_in_tour:
+                    # Match ID nikalna
+                    mid = None
+                    if "id" in item:
+                        mid = item["id"]
+                    elif "href" in item:
+                        id_m = re.search(r'[-/](\d{6,8})(?:/|$)', item["href"])
+                        mid = id_m.group(1) if id_m else re.sub(r'[^0-9]', '', item["href"])
 
-                for item in fixtures:
-                    raw_text = item.get("raw_text", "")
-                    href = item.get("href", "")
-                    node_obj = item.get("obj", {})
-
-                    # Match ID
-                    id_m = re.search(r'[-/](\d{6,8})(?:/|$)', href)
-                    mid = id_m.group(1) if id_m else node_obj.get("matchId") or node_obj.get("id")
-                    
-                    if not mid:
-                        mid = str(abs(hash(raw_text)))[:7]
-
-                    if mid in seen_match_ids:
+                    if not mid or mid in seen_match_ids:
                         continue
                     seen_match_ids.add(mid)
 
-                    # Clean Title & Teams
-                    clean_title = re.sub(r'(Upcoming|View Details|Watch Live|Live Now)', '', raw_text, flags=re.I)
-                    clean_title = re.sub(r'[-–—|]', ' ', clean_title)
-                    clean_title = re.sub(r'\s+', ' ', clean_title).strip()
+                    # Title aur Teams format
+                    raw_text = item.get("text") or item.get("name") or "Match"
+                    clean_str = re.sub(r'(Upcoming|Completed|Highlights|Watch Live|Live Now)', '', raw_text, flags=re.I)
+                    clean_str = re.sub(r'[-–—|]', ' ', clean_str)
+                    clean_str = re.sub(r'\s+', ' ', clean_str).strip()
 
-                    teams = re.split(r'\s+vs\s+|\s+VS\s+|\s+v\s+', clean_title, flags=re.I)
-                    t1 = teams[0].strip() if len(teams) > 0 else clean_title
-                    t2 = teams[1].strip() if len(teams) > 1 else ""
+                    teams = item.get("teams", [])
+                    t1 = teams[0].get("name", "") if len(teams) > 0 and isinstance(teams[0], dict) else ""
+                    t2 = teams[1].get("name", "") if len(teams) > 1 and isinstance(teams[1], dict) else ""
 
-                    # Agar startTime text mein ho
-                    start_time = node_obj.get("startTime") or now_ist
+                    if not t1:
+                        split_teams = re.split(r'\s+vs\s+|\s+VS\s+|\s+v\s+', clean_str, flags=re.I)
+                        t1 = split_teams[0].strip() if len(split_teams) > 0 else clean_str
+                        t2 = split_teams[1].strip() if len(split_teams) > 1 else ""
 
                     match_title = f"{t1} vs {t2}" if t2 else t1
+                    event_title = item.get("tourName") or tour.get("title") or f"{sport_name} Championship"
+                    full_title = f"{match_title} ({event_title})"
 
-                    entry = {
+                    # Status detect (LIVE vs UPCOMING)
+                    status = "UPCOMING"
+                    if "LIVE" in str(item.get("status", "")).upper() or "LIVE" in raw_text.upper():
+                        status = "LIVE"
+
+                    # Start time formatting
+                    start_time = item.get("startTime") or now_ist
+
+                    # Exact JSON Key Structure
+                    match_entry = {
                         "event_category": sport_name,
                         "match_id": int(mid) if str(mid).isdigit() else mid,
-                        "title": match_title,
+                        "title": full_title,
                         "match_name": match_title,
-                        "event_name": tour.get("title") or f"{sport_name} Championship",
+                        "event_name": event_title,
                         "src": item.get("src", ""),
                         "team_1": t1,
                         "team_2": t2,
-                        "status": "UPCOMING",
+                        "status": status,
                         "startTime": start_time
                     }
 
-                    final_payload["matches"].append(entry)
+                    # Live match streaming links agar available ho
+                    if status == "LIVE":
+                        match_entry["user-agent"] = user_agent
+                        match_entry["dai_url"] = None
+                        match_entry["adfree_url"] = None
+                        match_entry["google_m3u8_hex"] = None
+                        match_entry["akamai_m3u8_hex"] = None
+
+                    final_payload["matches"].append(match_entry)
 
             except Exception as tour_err:
                 continue
 
         await browser.close()
 
+        # Save exact JSON Output
         with open(output_json_file, "w", encoding="utf-8") as f:
             json.dump(final_payload, f, indent=4, ensure_ascii=False)
 
-        print(f"🟢 Extraction Finished! Total {len(final_payload['matches'])} Upcoming matches saved in {output_json_file}")
+        print(f"🟢 Successfully extracted and saved {len(final_payload['matches'])} matches in {output_json_file}")
 
 if __name__ == "__main__":
-    asyncio.run(scrape_all_tour_fixtures())
+    asyncio.run(scrape_complete_fancode_data())
     
