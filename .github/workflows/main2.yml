@@ -20,6 +20,10 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Install Dependencies
+        run: |
+          pip install pytz
+
       - name: Run Scraper Script
         run: |
           python main2.py
@@ -37,3 +41,4 @@ jobs:
             git commit -m "chore: auto-update matches data [skip ci]"
             git push
           fi
+          
