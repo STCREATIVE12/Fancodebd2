@@ -1,9 +1,11 @@
+import asyncio
 import json
 import re
-import urllib.request
 from datetime import datetime, timezone, timedelta
+from playwright.async_api import async_playwright
 
-def fetch_fancode_data():
+async def scrape_upcoming_events():
+    target_url = "https://www.fancode.com/schedule"
     output_json_file = "fancode_matches.json"
 
     # IST Time format (UTC + 5:30)
@@ -17,125 +19,145 @@ def fetch_fancode_data():
         "matches": []
     }
 
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9"
-    }
+    user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
-    print("🟢 Fetching FanCode schedule page...")
-    target_url = "https://www.fancode.com/schedule"
+    async with async_playwright() as p:
+        # Browser launch with lightweight flags to prevent timeouts
+        browser = await p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+        )
+        context = await browser.new_context(
+            user_agent=user_agent,
+            viewport={"width": 1280, "height": 800}
+        )
+        page = await context.new_page()
 
-    try:
-        req = urllib.request.Request(target_url, headers=headers)
-        with urllib.request.urlopen(req, timeout=25) as resp:
-            html = resp.read().decode('utf-8', errors='ignore')
+        # Unnecessary images/fonts block karo taaki page 2 second mein khul jaye
+        await page.route("**/*.{png,jpg,jpeg,svg,woff,woff2,css}", lambda route: route.abort())
 
-        # Next.js ka embedded data JSON extract karna
-        next_data_match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html, re.DOTALL)
+        print("🟢 Opening FanCode Schedule page...")
+        raw_matches = []
 
-        if next_data_match:
-            data = json.loads(next_data_match.group(1))
-            page_props = data.get("props", {}).get("pageProps", {})
+        try:
+            await page.goto(target_url, wait_until="domcontentloaded", timeout=40000)
+            await asyncio.sleep(4)
 
-            # Match list nikalne ke liye common schema keys check karna
-            raw_cards = (
-                page_props.get("matches") or 
-                page_props.get("scheduleData") or 
-                page_props.get("dehydratedState", {}).get("queries", []) or 
-                []
-            )
-
-            seen_ids = set()
-
-            # Recursively JSON scan karke matches dhoondhna
-            def extract_matches(obj):
-                if isinstance(obj, dict):
-                    if ("matchId" in obj or "id" in obj) and ("startTime" in obj or "status" in obj or "teams" in obj):
-                        mid = obj.get("matchId") or obj.get("id")
-                        if mid and mid not in seen_ids:
-                            seen_ids.add(mid)
-                            
-                            status = str(obj.get("status", "UPCOMING")).upper()
-                            if "LIVE" in status:
-                                final_status = "LIVE"
-                            else:
-                                final_status = "UPCOMING"
-
-                            teams = obj.get("teams", [])
-                            t1 = teams[0].get("name", "") if len(teams) > 0 and isinstance(teams[0], dict) else obj.get("team1", "")
-                            t2 = teams[1].get("name", "") if len(teams) > 1 and isinstance(teams[1], dict) else obj.get("team2", "")
-
-                            name = obj.get("name") or obj.get("title") or f"{t1} vs {t2}".strip()
-
-                            entry = {
-                                "event_category": obj.get("sport") or obj.get("sportName") or "Cricket",
-                                "match_id": int(mid) if str(mid).isdigit() else mid,
-                                "title": obj.get("title") or name,
-                                "match_name": f"{t1} vs {t2}" if (t1 and t2) else name,
-                                "event_name": obj.get("tourName") or obj.get("seriesName") or "FanCode Series",
-                                "src": obj.get("src") or obj.get("image") or obj.get("thumbnail") or "",
-                                "team_1": t1,
-                                "team_2": t2,
-                                "status": final_status,
-                                "startTime": obj.get("startTime") or obj.get("startDate") or now_ist
+            # Tarika 1: Direct Next.js embedded data read karna (100% accurate & fast)
+            raw_matches = await page.evaluate("""() => {
+                let found = [];
+                try {
+                    let nextData = document.getElementById('__NEXT_DATA__');
+                    if (nextData) {
+                        let parsed = JSON.parse(nextData.innerText);
+                        let scan = (obj) => {
+                            if (!obj) return;
+                            if (typeof obj === 'object') {
+                                if ((obj.matchId || obj.id) && (obj.startTime || obj.status || obj.teams)) {
+                                    found.push(obj);
+                                }
+                                for (let k in obj) scan(obj[k]);
                             }
+                        };
+                        scan(parsed);
+                    }
+                } catch(e) {}
+                return found;
+            }""")
 
-                            if final_status == "LIVE":
-                                entry["user-agent"] = headers["User-Agent"]
-                                entry["dai_url"] = None
-                                entry["adfree_url"] = None
-                                entry["google_m3u8_hex"] = None
-                                entry["akamai_m3u8_hex"] = None
+            # Tarika 2: Agar Next.js data empty mile toh DOM backup
+            if not raw_matches:
+                print("🟡 Fallback: Reading from DOM cards...")
+                for _ in range(3):
+                    await page.evaluate("window.scrollBy(0, 1000);")
+                    await asyncio.sleep(1)
 
-                            final_payload["matches"].append(entry)
+                raw_matches = await page.evaluate("""() => {
+                    let items = [];
+                    let links = document.querySelectorAll('a[href*="/matches/"]');
+                    links.forEach(a => {
+                        let href = a.href;
+                        let text = a.innerText.replace(/\\n/g, ' - ').trim();
+                        let img = a.querySelector('img');
+                        let src = img ? (img.src || img.getAttribute('data-src') || '') : '';
+                        if (href && text.length > 3) {
+                            items.push({
+                                href: href,
+                                name: text,
+                                src: src
+                            });
+                        }
+                    });
+                    return items;
+                }""")
 
-                    for v in obj.values():
-                        extract_matches(v)
-                elif isinstance(obj, list):
-                    for item in obj:
-                        extract_matches(item)
+        except Exception as e:
+            print(f"🔴 Error loading page: {str(e)}")
+        finally:
+            await browser.close()
 
-            extract_matches(raw_cards)
+        print(f"🟢 Raw entries captured: {len(raw_matches)}")
 
-        # Fallback: Agar __NEXT_DATA__ structure kisi din change ho jaye
-        if not final_payload["matches"]:
-            print("🟡 Trying fallback regex parser...")
-            slug_matches = re.findall(r'href="(/matches/[^"]+)"', html)
-            seen_slugs = set()
-            for path in slug_matches:
-                slug = path.split("/")[-1].split("?")[0]
-                if slug in seen_slugs:
-                    continue
-                seen_slugs.add(slug)
+        seen_ids = set()
+        for item in raw_matches:
+            # Match ID nikalna
+            mid = item.get("matchId") or item.get("id")
+            if not mid and "href" in item:
+                m_match = re.search(r'(\d+)', item["href"])
+                mid = m_match.group(1) if m_match else item["href"].split("/")[-1]
 
-                id_m = re.search(r'(\d+)', slug)
-                mid = int(id_m.group(1)) if id_m else slug
-                clean_name = re.sub(r'[-_]', ' ', slug).strip().title()
+            if not mid or mid in seen_ids:
+                continue
+            seen_ids.add(mid)
 
-                final_payload["matches"].append({
-                    "event_category": "Cricket",
-                    "match_id": mid,
-                    "title": clean_name,
-                    "match_name": clean_name,
-                    "event_name": "FanCode Series",
-                    "src": "",
-                    "team_1": "",
-                    "team_2": "",
-                    "status": "UPCOMING",
-                    "startTime": now_ist
-                })
+            # Match details
+            title = item.get("title") or item.get("name") or "Upcoming Match"
+            clean_title = re.sub(r'[-–—]', ' ', title)
+            clean_title = re.sub(r'\s+', ' ', clean_title).strip()
 
-        print(f"🟢 Matches Found: {len(final_payload['matches'])}")
+            # Status check
+            raw_status = str(item.get("status", "UPCOMING")).upper()
+            status = "LIVE" if "LIVE" in raw_status else "UPCOMING"
 
-    except Exception as e:
-        print(f"🔴 Error: {str(e)}")
+            # Teams mapping
+            teams = item.get("teams", [])
+            team1 = teams[0].get("name", "") if len(teams) > 0 and isinstance(teams[0], dict) else item.get("team1", "")
+            team2 = teams[1].get("name", "") if len(teams) > 1 and isinstance(teams[1], dict) else item.get("team2", "")
 
-    with open(output_json_file, "w", encoding="utf-8") as f:
-        json.dump(final_payload, f, indent=4, ensure_ascii=False)
+            if not team1 and "vs" in clean_title.lower():
+                parts = re.split(r'\s+vs\s+', clean_title, flags=re.I)
+                team1 = parts[0].strip()
+                team2 = parts[1].strip() if len(parts) > 1 else ""
 
-    print(f"🟢 Saved to {output_json_file}")
+            match_name = f"{team1} vs {team2}" if (team1 and team2) else clean_title
+
+            match_entry = {
+                "event_category": item.get("sport") or item.get("sportName") or "Cricket",
+                "match_id": int(mid) if str(mid).isdigit() else mid,
+                "title": clean_title,
+                "match_name": match_name,
+                "event_name": item.get("tourName") or item.get("seriesName") or "FanCode Event",
+                "src": item.get("src") or item.get("image") or item.get("thumbnail") or "",
+                "team_1": team1,
+                "team_2": team2,
+                "status": status,
+                "startTime": item.get("startTime") or item.get("startDate") or now_ist
+            }
+
+            if status == "LIVE":
+                match_entry["user-agent"] = user_agent
+                match_entry["dai_url"] = None
+                match_entry["adfree_url"] = None
+                match_entry["google_m3u8_hex"] = None
+                match_entry["akamai_m3u8_hex"] = None
+
+            final_payload["matches"].append(match_entry)
+
+        with open(output_json_file, "w", encoding="utf-8") as f:
+            json.dump(final_payload, f, indent=4, ensure_ascii=False)
+
+        print(f"🟢 Successfully saved {len(final_payload['matches'])} matches in {output_json_file}")
 
 if __name__ == "__main__":
-    fetch_fancode_data()
+    asyncio.run(scrape_upcoming_events())
     
