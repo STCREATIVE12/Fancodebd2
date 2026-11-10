@@ -1,4 +1,4 @@
-name: Scrape Upcoming Events
+ name: Scrape Upcoming Events
 
 on:
   schedule:
