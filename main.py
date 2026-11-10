@@ -1,210 +1,86 @@
-import asyncio
-import os
-import random
-import re
 import json
-from playwright.async_api import async_playwright
+import re
+import urllib.request
+from datetime import datetime, timezone, timedelta
 
-async def scrape_webpage():
-    target_url = "https://www.fancode.com/live-now/all-sports"
-    main_playlist_file = "playlist.m3u"
-    json_links_file = "links.json"
-    row_link_folder = "Row_Link"
-    status_file = "status.txt"
-    index_file = "Index.html"
-    
-    # ক্লাউডফ্লেয়ার ওয়ার্কারের বেজ ইউআরএল
-    cloudflare_worker_base = "https://raselmia9.app1-01733661143.workers.dev"
-    
-    if os.path.exists(row_link_folder):
-        for old_file in os.listdir(row_link_folder):
-            old_file_path = os.path.join(row_link_folder, old_file)
-            if os.path.isfile(old_file_path):
-                os.remove(old_file_path)
-    else:
-        os.makedirs(row_link_folder)
-        
-    status_messages = []
-    main_m3u_output = ["#EXTM3U"]
-    html_match_list = []
-    json_data_store = {}
+def fetch_fancode_data():
+    output_json_file = "fancode_matches.json"
 
-    device_profiles = [
-        {
-            "user_agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Mobile/15E148 Safari/604.1",
-            "viewport": {"width": 393, "height": 852},
-            "device_scale_factor": 3
-        },
-        {
-            "user_agent": "Mozilla/5.0 (Linux; Android 14; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36",
-            "viewport": {"width": 412, "height": 915},
-            "device_scale_factor": 2.625
-        }
-    ]
+    # IST Time without any external library (UTC + 5:30)
+    ist_zone = timezone(timedelta(hours=5, minutes=30))
+    now_ist = datetime.now(ist_zone).strftime("%I:%M:%S %p %d-%m-%Y")
 
-    async with async_playwright() as p:
-        temp_browser = await p.chromium.launch(headless=True)
-        temp_context = await temp_browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-        )
-        temp_page = await temp_context.new_page()
-        
-        print("🟢 Opening FanCode Live page...")
-        matches = []
-        try:
-            await temp_page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
-            await asyncio.sleep(6)
-            await temp_page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2);")
-            await asyncio.sleep(3)
+    final_payload = {
+        "name": "Fancode Live Matches Data in Json",
+        "telegram": "https://t.me/+rQTz5VL8CRpjNTZl",
+        "last update time": now_ist,
+        "matches": []
+    }
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5"
+    }
+
+    print("🟢 Fetching FanCode schedule page...")
+
+    target_url = "https://www.fancode.com/schedule"
+    try:
+        req = urllib.request.Request(target_url, headers=headers)
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            html = resp.read().decode('utf-8', errors='ignore')
+
+        # Matches links find karna
+        raw_matches = re.findall(r'href="(/matches/[^"]+)"', html)
+        seen_ids = set()
+
+        for path in raw_matches:
+            slug = path.split("/")[-1].split("?")[0]
             
-            matches = await temp_page.evaluate("""() => {
-                let items = [];
-                let matchCards = document.querySelectorAll('a[href*="/matches/"]');
-                matchCards.forEach(a => {
-                    let href = a.href;
-                    let text = a.innerText.replace(/\\n/g, ' - ').trim();
-                    let cleanText = text.replace(/LIVE/g, '').replace(/\\s+/g, ' ').trim();
-                    
-                    let imgTag = a.querySelector('img');
-                    let logoUrl = imgTag ? (imgTag.src || imgTag.getAttribute('data-src') || '') : '';
+            # Match ID nikalna
+            id_match = re.search(r'(\d+)', slug)
+            match_id = int(id_match.group(1)) if id_match else slug
 
-                    if (href && cleanText.length > 5 && !items.some(i => i.href === href)) {
-                        items.push({ title: cleanText, href: href, logo: logoUrl });
-                    }
-                });
-                return items.slice(0, 10);
-            }""")
-        except Exception as e:
-            print(f"🔴 Error loading main page: {str(e)}")
-            
-        await temp_browser.close()
-        print(f"🟢 Found matches count: {len(matches)}")
-        
-        if not matches:
-            print("🟡 No matches found.")
-            status_messages.append("🔴 No matches found on main page.")
-        else:
-            for index, match in enumerate(matches):
-                raw_title = match['title']
-                m_url = match['href']
-                m_logo = match['logo']
-                
-                # হাইফেন এবং স্পেস ক্লিন করা
-                cleaned_title = re.sub(r'[-–—]', ' ', raw_title)
-                cleaned_title = re.sub(r'\s+', ' ', cleaned_title).strip()
-                
-                # প্লেলিস্টের জন্য স্বাভাবিক টাইটেল (যেখানে স্পেস থাকবে)
-                m_title_normal = cleaned_title
-                
-                # JSON এবং লিংকের জন্য টাইটেল স্লাগ (যেখানে কোনো স্পেস থাকবে না, সব স্পেসের বদলে '_' হবে)
-                json_title_slug = re.sub(r'[^a-zA-Z0-9]', '_', cleaned_title)
-                json_title_slug = re.sub(r'_+', '_', json_title_slug).strip('_')
-                
-                print(f"🟡 Processing: {m_title_normal}")
-                
-                match_browser = await p.chromium.launch(headless=True)
-                unique_device = random.choice(device_profiles)
-                
-                match_context = await match_browser.new_context(
-                    viewport=unique_device["viewport"],
-                    device_scale_factor=unique_device["device_scale_factor"],
-                    is_mobile=True,
-                    has_touch=True,
-                    user_agent=unique_device["user_agent"],
-                    locale="bn-BD",
-                    timezone_id="Asia/Dhaka",
-                    geolocation={"latitude": 23.8103, "longitude": 90.4125},
-                    permissions=["geolocation"]
-                )
-                
-                await match_context.add_init_script("Object.defineProperty(navigator, 'webdriver', { get: () => undefined });")
-                match_page = await match_context.new_page()
-                
-                captured_links = []
-                match_page.on("request", lambda req: captured_links.append(req.url) if "index.m3u8" in req.url else None)
-                
-                try:
-                    await match_page.goto(m_url, wait_until="domcontentloaded", timeout=30000)
-                    await asyncio.sleep(12)
-                except Exception as e:
-                    print(f"🟡 Match page error: {str(e)}")
-                
-                master_link = next((l for l in captured_links if "index.m3u8" in l), None)
-                
-                if not master_link:
-                    print(f"🔴 Master playlist link not found for: {m_title_normal}. Skipping.")
-                    status_messages.append(f"🔴 Skipped (No Master Link): {m_title_normal}")
-                    await match_browser.close()
-                    continue
-                
-                print(f"🟢 Captured Master Link: {master_link}")
-                
-                match_file_name = f"match_{index + 1}_{json_title_slug}.m3u8"
-                match_file_path = os.path.join(row_link_folder, match_file_name)
-                
-                sub_file_content = [
-                    "#EXTM3U",
-                    f'#EXTINF:-1 tvg-logo="{m_logo}" group-title="FanCode",{m_title_normal}',
-                    master_link
-                ]
-                
-                with open(match_file_path, "w", encoding="utf-8") as sf:
-                    sf.write("\n".join(sub_file_content))
-                
-                # JSON ফাইলের ডেটা (শুধুমাত্র এই ৩টি ফিল্ড থাকবে এবং টাইটেলে কোনো স্পেস থাকবে না)
-                json_data_store[json_title_slug] = {
-                    "title": json_title_slug,
-                    "logo": m_logo,
-                    "master_link": master_link
-                }
-                
-                status_messages.append(f"🟢 Success: {m_title_normal}")
-                
-                # ক্লাউডফ্লেয়ার ওয়ার্কারের লিংক ফরম্যাট
-                worker_match_url = f"{cloudflare_worker_base}?match={json_title_slug}.m3u8"
-                
-                # প্লেলিস্টের টাইটেলে স্বাভাবিক স্পেস থাকবে
-                main_m3u_output.append(f'#EXTINF:-1 tvg-logo="{m_logo}" group-title="FanCode",{m_title_normal}')
-                main_m3u_output.append(worker_match_url)
-                
-                html_match_list.append(f"<li><img src='{m_logo}' width='30' style='vertical-align:middle;margin-right:8px;'><b>{m_title_normal}</b> -> <a href='{worker_match_url}' target='_blank'>Worker Proxy Link</a></li>")
-                
-                await match_browser.close()
+            if match_id in seen_ids:
+                continue
+            seen_ids.add(match_id)
 
-        with open(main_playlist_file, "w", encoding="utf-8") as f:
-            f.write("\n".join(main_m3u_output))
-            
-        with open(json_links_file, "w", encoding="utf-8") as jf:
-            json.dump(json_data_store, jf, indent=4, ensure_ascii=False)
-            
-        with open(status_file, "w", encoding="utf-8") as sf:
-            sf.write("\n".join(status_messages) if status_messages else "🔴 No status recorded.")
+            # Match title format karna
+            clean_title = re.sub(r'[-_]', ' ', slug).strip()
+            clean_title = re.sub(r'\s+', ' ', clean_title).title()
 
-        html_content = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>FanCode Live Playlists</title>
-    <style>
-        body {{ font-family: Arial, sans-serif; margin: 20px; background: #121212; color: #fff; }}
-        h1 {{ color: #ff6600; }}
-        ul {{ line-height: 2; }}
-        a {{ color: #00bcd4; text-decoration: none; }}
-        a:hover {{ text-decoration: underline; }}
-    </style>
-</head>
-<body>
-    <h1>FanCode Live Matches (Cloudflare Worker Structure)</h1>
-    <p>Playlists are integrated with Cloudflare Worker proxy URLs.</p>
-    <ul>
-        {"".join(html_match_list) if html_match_list else "<li>No active streams found right now.</li>"}
-    </ul>
-</body>
-</html>"""
-        with open(index_file, "w", encoding="utf-8") as hf:
-            hf.write(html_content)
-            
-        print("🟢 Process completed successfully! playlist.m3u and links.json updated.")
+            teams = clean_title.split(" Vs ")
+            team_1 = teams[0].strip() if len(teams) > 0 else clean_title
+            team_2 = teams[1].strip() if len(teams) > 1 else ""
+
+            match_name = f"{team_1} vs {team_2}" if team_2 else team_1
+
+            entry = {
+                "event_category": "Cricket",
+                "match_id": match_id,
+                "title": clean_title,
+                "match_name": match_name,
+                "event_name": "FanCode Series",
+                "src": "",
+                "team_1": team_1,
+                "team_2": team_2,
+                "status": "UPCOMING",
+                "startTime": now_ist
+            }
+
+            final_payload["matches"].append(entry)
+
+        print(f"🟢 Found {len(final_payload['matches'])} matches.")
+
+    except Exception as e:
+        print(f"🔴 Error fetching matches: {str(e)}")
+
+    with open(output_json_file, "w", encoding="utf-8") as f:
+        json.dump(final_payload, f, indent=4, ensure_ascii=False)
+
+    print(f"🟢 Done! Saved to {output_json_file}")
 
 if __name__ == "__main__":
-    asyncio.run(scrape_webpage())
+    fetch_fancode_data()
+    
