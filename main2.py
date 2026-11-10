@@ -5,7 +5,7 @@ import urllib.request
 from datetime import datetime, timezone, timedelta
 from playwright.async_api import async_playwright
 
-async def scrape_complete_fancode_live_and_upcoming():
+async def scrape_exact_fancode_feed():
     output_json_file = "fancode_matches.json"
 
     # IST Time format (UTC + 5:30)
@@ -33,80 +33,89 @@ async def scrape_complete_fancode_live_and_upcoming():
         )
         page = await context.new_page()
 
-        # STEP 1: Live Matches & Stream interceptor (/live-now/all-sports)
-        print("🟢 Step 1: Checking Live Matches & Streaming Links...")
-        live_matches_data = []
+        # Styles aur fonts block taaki execution fast rahe
+        await page.route("**/*.{woff,woff2,css}", lambda route: route.abort())
 
+        # ==========================================
+        # STEP 1: LIVE MATCHES & STREAM CAPTURE
+        # ==========================================
+        print("🟢 Step 1: Capturing Live Matches & Master Streams...")
         try:
-            await page.goto("https://www.fancode.com/live-now/all-sports", wait_until="domcontentloaded", timeout=25000)
+            await page.goto("https://www.fancode.com/live-now/all-sports", wait_until="domcontentloaded", timeout=30000)
             await asyncio.sleep(4)
 
-            live_cards = await page.evaluate("""() => {
+            live_links = await page.evaluate("""() => {
                 let items = [];
                 let anchors = document.querySelectorAll('a[href*="/matches/"]');
                 anchors.forEach(a => {
                     let href = a.href;
-                    let text = a.innerText.replace(/\\n/g, ' | ').trim();
-                    let img = a.querySelector('img');
-                    let src = img ? (img.src || img.getAttribute('data-src') || '') : '';
-                    if (href && text.length > 3) {
-                        items.push({ href, text, src });
-                    }
+                    if (href && !items.includes(href)) items.push(href);
                 });
                 return items;
             }""")
 
-            for card in live_cards:
-                m_url = card["href"]
-                raw_text = card["text"]
-                img_src = card["src"]
+            for l_url in live_links[:5]:
+                # 7-digit Match ID extract karna
+                m_match = re.search(r'[-/](\d{6,8})(?:/|$)', l_url)
+                if not m_match:
+                    continue
+                raw_mid = m_match.group(1)
+                mid_eng = f"{raw_mid}_ENG"
 
-                id_m = re.search(r'[-/](\d{6,8})(?:/|$)', m_url)
-                mid_num = id_m.group(1) if id_m else "0"
-                match_id = f"{mid_num}_ENG"
-
-                # Stream capture
-                match_page = await context.new_page()
-                captured_streams = []
-                match_page.on("request", lambda req: captured_streams.append(req.url) if ".m3u8" in req.url else None)
+                # Dedicated page par stream request listen karna
+                stream_page = await context.new_page()
+                captured_m3u8 = []
+                stream_page.on("request", lambda req: captured_m3u8.append(req.url) if ".m3u8" in req.url else None)
 
                 try:
-                    await match_page.goto(m_url, wait_until="domcontentloaded", timeout=15000)
-                    await asyncio.sleep(5)
+                    await stream_page.goto(l_url, wait_until="domcontentloaded", timeout=20000)
+                    await asyncio.sleep(6)
                 except Exception:
                     pass
 
-                master_url = next((u for u in captured_streams if "1080p.m3u8" in u or "index.m3u8" in u), None)
-                if not master_url and captured_streams:
-                    master_url = captured_streams[0]
+                # Page details extract
+                match_meta = await stream_page.evaluate("""() => {
+                    let title = document.title || '';
+                    let img = document.querySelector('img[src*="cms-media"], img[class*="Casa"], img[class*="hero"]');
+                    let src = img ? (img.src || img.getAttribute('data-src') || '') : '';
+                    let text = document.body.innerText || '';
+                    return { title, src, text };
+                }""")
 
-                # Convert master .m3u8 content into HEX format (Jaise aapke json mein hai)
+                await stream_page.close()
+
+                # Master Stream URL find karna
+                master_url = next((u for u in captured_m3u8 if "1080p.m3u8" in u or "index.m3u8" in u), None)
+                if not master_url and captured_m3u8:
+                    master_url = captured_m3u8[0]
+
+                # Hexadecimal encode stream text
                 m3u8_hex = None
                 if master_url:
                     try:
                         req = urllib.request.Request(master_url, headers={"User-Agent": user_agent})
-                        with urllib.request.urlopen(req, timeout=5) as resp:
-                            m3u8_text = resp.read().decode('utf-8', errors='ignore')
-                            m3u8_hex = m3u8_text.encode('utf-8').hex()
+                        with urllib.request.urlopen(req, timeout=6) as resp:
+                            raw_stream = resp.read().decode('utf-8', errors='ignore')
+                            m3u8_hex = raw_stream.encode('utf-8').hex()
                     except Exception:
                         pass
 
-                await match_page.close()
-
-                # Clean Title & Teams
-                clean_t = re.sub(r'(LIVE|WATCH LIVE|HIGHLIGHTS|VIEW DETAILS)', '', raw_text, flags=re.I)
-                clean_t = re.sub(r'[-–—|]', ' ', clean_t).strip()
+                clean_t = match_meta["title"].split("|")[0].replace("Watch", "").strip()
                 t_parts = re.split(r'\s+vs\s+|\s+VS\s+|\s+v\s+', clean_t, flags=re.I)
                 t1 = t_parts[0].strip() if len(t_parts) > 0 else clean_t
                 t2 = t_parts[1].strip() if len(t_parts) > 1 else ""
 
-                live_entry = {
-                    "event_category": "Cricket", # Dynamic detect
-                    "match_id": match_id,
+                banner_src = match_meta["src"]
+                if not banner_src or "flags" in banner_src:
+                    banner_src = f"https://www.fancode.com/skillup-uploads/cms-media/{raw_mid}_fc-Web.jpg"
+
+                final_payload["matches"].append({
+                    "event_category": "Cricket" if "cricket" in l_url else "Football",
+                    "match_id": mid_eng,
                     "title": f"{clean_t} [English]",
                     "match_name": f"{t1} vs {t2} [English]" if t2 else f"{clean_t} [English]",
                     "event_name": clean_t,
-                    "src": img_src,
+                    "src": banner_src,
                     "team_1": t1,
                     "team_2": t2,
                     "status": "LIVE",
@@ -116,179 +125,158 @@ async def scrape_complete_fancode_live_and_upcoming():
                     "adfree_url": master_url,
                     "google_m3u8_hex": m3u8_hex,
                     "akamai_m3u8_hex": None
-                }
-                final_payload["matches"].append(live_entry)
-                print(f"🔴 Captured LIVE: {live_entry['match_name']}")
+                })
+                print(f"🔴 Live Captured: {clean_t}")
 
         except Exception as e:
-            print(f"🟡 Live scrape info: {str(e)}")
+            print(f"🟡 Live phase skipped/error: {str(e)}")
 
-        # STEP 2: Sabhi Tours se 1-Week Upcoming Matches Extract karna
-        print("🟢 Step 2: Extracting 1-Week Upcoming Matches across all Sports...")
-        tours_url = "https://www.fancode.com/tour-listing/all"
-        tours_list = []
+        # ==========================================
+        # STEP 2: SCHEDULE PAGES SE 1-WEEK FIXTURES
+        # ==========================================
+        print("🟢 Step 2: Extracting 1-Week Schedule across all sports...")
 
-        try:
-            await page.goto(tours_url, wait_until="domcontentloaded", timeout=25000)
-            await asyncio.sleep(3)
-
-            for _ in range(5):
-                await page.evaluate("window.scrollBy(0, 1000);")
-                await asyncio.sleep(0.8)
-
-            tours_list = await page.evaluate("""() => {
-                let items = [];
-                let anchors = document.querySelectorAll('a[href*="/tour/"]');
-                anchors.forEach(a => {
-                    let href = a.href;
-                    let text = a.innerText.replace(/\\n/g, ' ').trim();
-                    if (href && !items.some(i => i.href === href)) {
-                        items.push({ href: href, title: text });
-                    }
-                });
-                return items;
-            }""")
-        except Exception as e:
-            print(f"🔴 Error loading tours: {str(e)}")
+        sports_schedule_urls = [
+            ("Cricket", "https://www.fancode.com/cricket/schedule"),
+            ("Football", "https://www.fancode.com/football/schedule"),
+            ("Tennis", "https://www.fancode.com/lawn-tennis/schedule"),
+            ("Formula 1", "https://www.fancode.com/formula1/schedule"),
+            ("MotoGP", "https://www.fancode.com/motogp/schedule"),
+            ("Golf", "https://www.fancode.com/golf/schedule"),
+            ("Motorsports", "https://www.fancode.com/racing/schedule"),
+            ("Badminton", "https://www.fancode.com/badminton/schedule")
+        ]
 
         seen_match_ids = {m["match_id"] for m in final_payload["matches"]}
 
-        # Top 35 active tours scan
-        for idx, tour in enumerate(tours_list[:35]):
-            t_url = tour["href"]
-            matches_url = t_url if "/matches" in t_url else f"{t_url.rstrip('/')}/matches"
-            print(f"[{idx+1}/{min(len(tours_list), 35)}] Scanning: {matches_url}")
-
-            sport_name = "Cricket"
-            if "/football/" in t_url:
-                sport_name = "Football"
-            elif "/tennis/" in t_url or "/lawn-tennis/" in t_url:
-                sport_name = "Tennis"
-            elif "/formula1/" in t_url:
-                sport_name = "Formula 1"
-            elif "/motogp/" in t_url:
-                sport_name = "MotoGP"
-            elif "/badminton/" in t_url:
-                sport_name = "Badminton"
-            elif "/golf/" in t_url:
-                sport_name = "Golf"
-            elif "/racing/" in t_url:
-                sport_name = "Motorsports"
-
+        for sport_name, sched_url in sports_schedule_urls:
+            print(f"👉 Scanning Schedule: {sched_url}")
             try:
-                await page.goto(matches_url, wait_until="domcontentloaded", timeout=18000)
-                await asyncio.sleep(2)
-                await page.evaluate("window.scrollBy(0, 800);")
-                await asyncio.sleep(1)
+                await page.goto(sched_url, wait_until="domcontentloaded", timeout=25000)
+                await asyncio.sleep(3)
 
-                upcoming_fixtures = await page.evaluate("""() => {
-                    let found = [];
+                # Niche ke dates (Tomorrow, Next Week) load karne ke liye 4 baar scroll
+                for _ in range(4):
+                    await page.evaluate("window.scrollBy(0, 1000);")
+                    await asyncio.sleep(0.8)
 
-                    // Top hero/banner poster check
-                    let pageHero = document.querySelector('img[class*="CasaBackgroundImage"], div[class*="hero"] img');
-                    let pageHeroSrc = pageHero ? pageHero.src : '';
+                # Schedule page se structured match data nikalna
+                matches_found = await page.evaluate("""() => {
+                    let results = [];
 
-                    // DOM Cards
-                    let cards = document.querySelectorAll('a[href*="/matches/"], div[role="article"]');
+                    // Next.js direct match queries (Agar available ho)
+                    try {
+                        let scan = (node) => {
+                            if (!node) return;
+                            if (typeof node === 'object') {
+                                if ((node.matchId || node.id) && (node.startTime || node.teams)) {
+                                    let mid = node.matchId || node.id;
+                                    let t1 = '';
+                                    let t2 = '';
+                                    if (node.teams && node.teams.length >= 2) {
+                                        t1 = node.teams[0].name || '';
+                                        t2 = node.teams[1].name || '';
+                                    }
+                                    results.push({
+                                        mid: mid,
+                                        team_1: t1,
+                                        team_2: t2,
+                                        name: node.name || node.title || '',
+                                        tour: node.tourName || node.seriesName || '',
+                                        src: node.src || node.image || '',
+                                        startTime: node.startTime || '',
+                                        status: node.status || 'UPCOMING'
+                                    });
+                                }
+                                for (let k in node) scan(node[k]);
+                            }
+                        };
+                        if (window.__NEXT_DATA__) scan(window.__NEXT_DATA__);
+                    } catch(e) {}
+
+                    // DOM Match Cards parsing
+                    let cards = document.querySelectorAll('a[href*="/matches/"]');
                     cards.forEach(c => {
-                        let text = c.innerText ? c.innerText.replace(/\\n/g, ' | ') : '';
-                        let linkEl = c.tagName === 'A' ? c : c.querySelector('a');
-                        let href = linkEl ? linkEl.href : '';
-                        let img = c.querySelector('img');
-                        let poster = img ? (img.src || img.getAttribute('data-src') || '') : pageHeroSrc;
+                        let href = c.href;
+                        let text = c.innerText ? c.innerText.replace(/\\n/g, ' - ') : '';
+                        
+                        // Banner image pakadna (flag icon nahi)
+                        let img = c.querySelector('img:not([src*="flags"])');
+                        let src = img ? (img.src || img.getAttribute('data-src') || '') : '';
 
-                        let isComp = text.includes('Completed') || text.includes('Highlights');
-                        if (text.length > 5 && !isComp) {
-                            found.push({ text, href, poster });
+                        let idMatch = href.match(/[-/](\\d{6,8})(?:/|$)/);
+                        if (idMatch) {
+                            results.push({
+                                mid: idMatch[1],
+                                href: href,
+                                raw_text: text,
+                                src: src,
+                                status: text.includes('LIVE') ? 'LIVE' : 'UPCOMING'
+                            });
                         }
                     });
 
-                    // Next.js state scan
-                    if (window.__NEXT_DATA__) {
-                        try {
-                            let scan = (node) => {
-                                if (!node) return;
-                                if (typeof node === 'object') {
-                                    if ((node.matchId || node.id) && (node.startTime || node.teams)) {
-                                        let poster = node.src || node.image || node.banner || pageHeroSrc;
-                                        found.push({
-                                            text: (node.name || node.title || '') + ' | ' + (node.startTime || ''),
-                                            href: '/matches/' + (node.matchId || node.id),
-                                            poster: poster,
-                                            node: node
-                                        });
-                                    }
-                                    for (let k in node) scan(node[k]);
-                                }
-                            };
-                            scan(window.__NEXT_DATA__);
-                        } catch(e) {}
-                    }
-
-                    return found;
+                    return results;
                 }""")
 
-                for itm in upcoming_fixtures:
-                    raw_text = itm.get("text", "")
-                    href = itm.get("href", "")
-                    node_data = itm.get("node", {})
-
-                    id_m = re.search(r'[-/](\d{6,8})(?:/|$)', href)
-                    mid_str = id_m.group(1) if id_m else str(node_data.get("matchId") or node_data.get("id") or "")
-                    
-                    if not mid_str:
-                        mid_str = str(abs(hash(raw_text)))[:7]
-
-                    mid_val = int(mid_str) if mid_str.isdigit() else mid_str
-
-                    if mid_val in seen_match_ids or f"{mid_val}_ENG" in seen_match_ids:
+                for itm in matches_found:
+                    mid_raw = str(itm.get("mid", ""))
+                    if not mid_raw or not mid_raw.isdigit():
                         continue
-                    seen_match_ids.add(mid_val)
 
-                    clean_t = re.sub(r'(Upcoming|Completed|Highlights|Watch Live|Live Now|VIEW DETAILS)', '', raw_text, flags=re.I)
-                    clean_t = re.sub(r'[-–—|]', ' ', clean_t)
-                    clean_t = re.sub(r'\s+', ' ', clean_t).strip()
+                    mid_int = int(mid_raw)
+                    if mid_int in seen_match_ids or f"{mid_int}_ENG" in seen_match_ids:
+                        continue
+                    seen_match_ids.add(mid_int)
 
-                    teams = re.split(r'\s+vs\s+|\s+VS\s+|\s+v\s+', clean_t, flags=re.I)
-                    t1 = teams[0].strip() if len(teams) > 0 else clean_t
-                    t2 = teams[1].strip() if len(teams) > 1 else ""
+                    # Teams resolve
+                    t1 = itm.get("team_1", "")
+                    t2 = itm.get("team_2", "")
+                    raw_text = itm.get("raw_text") or itm.get("name") or ""
+
+                    if not t1 or not t2:
+                        clean_line = re.sub(r'(Upcoming|Completed|Highlights|Watch Live|Live Now)', '', raw_text, flags=re.I)
+                        clean_line = re.sub(r'[-–—|]', ' ', clean_line).strip()
+                        parts = re.split(r'\s+vs\s+|\s+VS\s+|\s+v\s+', clean_line, flags=re.I)
+                        t1 = parts[0].strip() if len(parts) > 0 else clean_line
+                        t2 = parts[1].strip() if len(parts) > 1 else ""
 
                     match_name = f"{t1} vs {t2}" if t2 else t1
-                    event_title = tour.get("title") or f"{sport_name} Series"
-                    full_title = f"{match_name} ({event_title})"
+                    event_name = itm.get("tour") or f"{sport_name} Series, 2026"
+                    title = f"{match_name} ({event_name})"
 
-                    # Exact Poster resolution
-                    poster_url = itm.get("poster", "")
-                    if not poster_url:
-                        poster_url = f"https://www.fancode.com/skillup-uploads/cms-media/{mid_str}_fc-web.jpg"
+                    # High-res poster image ensure karna
+                    src_url = itm.get("src", "")
+                    if not src_url or "flags" in src_url:
+                        src_url = f"https://www.fancode.com/skillup-uploads/cms-media/{mid_int}_fc-web.jpg"
 
-                    start_time = node_data.get("startTime") or now_ist
+                    start_time = itm.get("startTime") or now_ist
 
-                    # Exact Schema structure jaisa sample json mein hai
-                    entry = {
+                    final_payload["matches"].append({
                         "event_category": sport_name,
-                        "match_id": mid_val,
-                        "title": full_title,
+                        "match_id": mid_int,
+                        "title": title,
                         "match_name": match_name,
-                        "event_name": event_title,
-                        "src": poster_url,
+                        "event_name": event_name,
+                        "src": src_url,
                         "team_1": t1,
                         "team_2": t2,
                         "status": "UPCOMING",
                         "startTime": start_time
-                    }
-                    final_payload["matches"].append(entry)
+                    })
 
-            except Exception:
+            except Exception as sched_err:
+                print(f"⚠️ Error in {sport_name} schedule: {str(sched_err)}")
                 continue
 
         await browser.close()
 
+        # Output save
         with open(output_json_file, "w", encoding="utf-8") as f:
             json.dump(final_payload, f, indent=4, ensure_ascii=False)
 
-        print(f"🟢 Success! Total {len(final_payload['matches'])} matches saved in {output_json_file}")
+        print(f"🟢 Successfully extracted: {len(final_payload['matches'])} matches in {output_json_file}")
 
 if __name__ == "__main__":
-    asyncio.run(scrape_complete_fancode_live_and_upcoming())
+    asyncio.run(scrape_exact_fancode_feed())
     
