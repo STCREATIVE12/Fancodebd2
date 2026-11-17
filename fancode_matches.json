@@ -1,24 +1,6 @@
 {
     "name": "Fancode Live Matches Data in Json",
     "telegram": "https://t.me/+rQTz5VL8CRpjNTZl",
-    "last update time": "07:15:14 AM 17-11-2026",
-    "matches": [
-        {
-            "event_category": "Football",
-            "match_id": "20000865_ENG",
-            "title": "Nov 17, 06:30 AM: WTGL 2026 Golf,  Live , Videos, Highlights & info [English]",
-            "match_name": "Nov 17, 06:30 AM: WTGL 2026 Golf,  Live , Videos, Highlights & info [English]",
-            "event_name": "Nov 17, 06:30 AM: WTGL 2026 Golf,  Live , Videos, Highlights & info",
-            "src": "https://images.fancode.com/skillup-uploads/cms-media/AFG-vs-ZIM.png?hash=eyJrZXkiOiJza2lsbHVwLXVwbG9hZHMvY21zLW1lZGlhL0FGRy12cy1aSU0ucG5nIiwiZWRpdHMiOnsicmVzaXplIjp7ImZpdCI6ImNvdmVyIiwid2lkdGgiOjM2LCJoZWlnaHQiOjM2fSwid2VicCI6eyJxdWFsaXR5Ijo2MCwibG9zc2xlc3MiOmZhbHNlfX0sIm91dHB1dEZvcm1hdCI6IndlYnAifQ==",
-            "team_1": "Nov 17, 06:30 AM: WTGL 2026 Golf,  Live , Videos, Highlights & info",
-            "team_2": "",
-            "status": "LIVE",
-            "startTime": "07:15:14 AM 17-11-2026",
-            "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
-            "dai_url": null,
-            "adfree_url": null,
-            "google_m3u8_hex": null,
-            "akamai_m3u8_hex": null
-        }
-    ]
+    "last update time": "09:13:53 PM 17-11-2026",
+    "matches": []
 }
