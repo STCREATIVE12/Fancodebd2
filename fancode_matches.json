@@ -1,6 +1,75 @@
 {
     "name": "Fancode Live Matches Data in Json",
     "telegram": "https://t.me/+rQTz5VL8CRpjNTZl",
-    "last update time": "06:15:39 AM 18-11-2026",
-    "matches": []
+    "last update time": "08:53:22 PM 18-11-2026",
+    "matches": [
+        {
+            "event_category": "Football",
+            "match_id": "19960646_ENG",
+            "title": "CWR vs KMG Live Cricket: Nov 18, 04:45 PM, Squads, Venue & Videos [English]",
+            "match_name": "CWR vs KMG Live Cricket: Nov 18, 04:45 PM, Squads, Venue & Videos [English]",
+            "event_name": "CWR vs KMG Live Cricket: Nov 18, 04:45 PM, Squads, Venue & Videos",
+            "src": "https://images.fancode.com/skillup-uploads/cms-media/AFG-vs-ZIM.png?hash=eyJrZXkiOiJza2lsbHVwLXVwbG9hZHMvY21zLW1lZGlhL0FGRy12cy1aSU0ucG5nIiwiZWRpdHMiOnsicmVzaXplIjp7ImZpdCI6ImNvdmVyIiwid2lkdGgiOjM2LCJoZWlnaHQiOjM2fSwid2VicCI6eyJxdWFsaXR5Ijo2MCwibG9zc2xlc3MiOmZhbHNlfX0sIm91dHB1dEZvcm1hdCI6IndlYnAifQ==",
+            "team_1": "CWR",
+            "team_2": "KMG Live Cricket: Nov 18, 04:45 PM, Squads, Venue & Videos",
+            "status": "LIVE",
+            "startTime": "08:53:22 PM 18-11-2026",
+            "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+            "dai_url": null,
+            "adfree_url": null,
+            "google_m3u8_hex": null,
+            "akamai_m3u8_hex": null
+        },
+        {
+            "event_category": "Football",
+            "match_id": "20012110_ENG",
+            "title": "BAN vs SA Live Cricket: Nov 15, 01:30 PM, Squads, Venue & Videos [English]",
+            "match_name": "BAN vs SA Live Cricket: Nov 15, 01:30 PM, Squads, Venue & Videos [English]",
+            "event_name": "BAN vs SA Live Cricket: Nov 15, 01:30 PM, Squads, Venue & Videos",
+            "src": "https://images.fancode.com/skillup-uploads/cms-media/AFG-vs-ZIM.png?hash=eyJrZXkiOiJza2lsbHVwLXVwbG9hZHMvY21zLW1lZGlhL0FGRy12cy1aSU0ucG5nIiwiZWRpdHMiOnsicmVzaXplIjp7ImZpdCI6ImNvdmVyIiwid2lkdGgiOjM2LCJoZWlnaHQiOjM2fSwid2VicCI6eyJxdWFsaXR5Ijo2MCwibG9zc2xlc3MiOmZhbHNlfX0sIm91dHB1dEZvcm1hdCI6IndlYnAifQ==",
+            "team_1": "BAN",
+            "team_2": "SA Live Cricket: Nov 15, 01:30 PM, Squads, Venue & Videos",
+            "status": "LIVE",
+            "startTime": "08:53:22 PM 18-11-2026",
+            "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+            "dai_url": null,
+            "adfree_url": null,
+            "google_m3u8_hex": null,
+            "akamai_m3u8_hex": null
+        },
+        {
+            "event_category": "Football",
+            "match_id": "20034134_ENG",
+            "title": "SA vs ASA Live Cricket: Nov 18, 02:30 PM, Squads, Venue & Videos [English]",
+            "match_name": "SA vs ASA Live Cricket: Nov 18, 02:30 PM, Squads, Venue & Videos [English]",
+            "event_name": "SA vs ASA Live Cricket: Nov 18, 02:30 PM, Squads, Venue & Videos",
+            "src": "https://images.fancode.com/skillup-uploads/cms-media/AFG-vs-ZIM.png?hash=eyJrZXkiOiJza2lsbHVwLXVwbG9hZHMvY21zLW1lZGlhL0FGRy12cy1aSU0ucG5nIiwiZWRpdHMiOnsicmVzaXplIjp7ImZpdCI6ImNvdmVyIiwid2lkdGgiOjM2LCJoZWlnaHQiOjM2fSwid2VicCI6eyJxdWFsaXR5Ijo2MCwibG9zc2xlc3MiOmZhbHNlfX0sIm91dHB1dEZvcm1hdCI6IndlYnAifQ==",
+            "team_1": "SA",
+            "team_2": "ASA Live Cricket: Nov 18, 02:30 PM, Squads, Venue & Videos",
+            "status": "LIVE",
+            "startTime": "08:53:22 PM 18-11-2026",
+            "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+            "dai_url": null,
+            "adfree_url": null,
+            "google_m3u8_hex": null,
+            "akamai_m3u8_hex": null
+        },
+        {
+            "event_category": "Football",
+            "match_id": "20031528_ENG",
+            "title": "OSW vs OIW Live Cricket: Nov 18, 08:30 PM, Squads, Venue & Videos [English]",
+            "match_name": "OSW vs OIW Live Cricket: Nov 18, 08:30 PM, Squads, Venue & Videos [English]",
+            "event_name": "OSW vs OIW Live Cricket: Nov 18, 08:30 PM, Squads, Venue & Videos",
+            "src": "https://images.fancode.com/skillup-uploads/cms-media/AFG-vs-ZIM.png?hash=eyJrZXkiOiJza2lsbHVwLXVwbG9hZHMvY21zLW1lZGlhL0FGRy12cy1aSU0ucG5nIiwiZWRpdHMiOnsicmVzaXplIjp7ImZpdCI6ImNvdmVyIiwid2lkdGgiOjM2LCJoZWlnaHQiOjM2fSwid2VicCI6eyJxdWFsaXR5Ijo2MCwibG9zc2xlc3MiOmZhbHNlfX0sIm91dHB1dEZvcm1hdCI6IndlYnAifQ==",
+            "team_1": "OSW",
+            "team_2": "OIW Live Cricket: Nov 18, 08:30 PM, Squads, Venue & Videos",
+            "status": "LIVE",
+            "startTime": "08:53:22 PM 18-11-2026",
+            "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+            "dai_url": null,
+            "adfree_url": null,
+            "google_m3u8_hex": null,
+            "akamai_m3u8_hex": null
+        }
+    ]
 }
