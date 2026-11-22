@@ -6,7 +6,7 @@ import json
 from playwright.async_api import async_playwright
 
 async def scrape_webpage():
-    target_url = "https://www.fancode.com/live-now/all-sports"
+    target_url = "https://www.fancode.com/bd/live-now/all-sports"
     main_playlist_file = "playlist.m3u"
     json_links_file = "links.json"
     row_link_folder = "Row_Link"
